@@ -65,4 +65,17 @@ scale and the first things to replace beyond it.
 
 ## Saturation findings
 
-(filled in after load test — see load-testing.md)
+Measured (full detail + method in [load-testing.md](./load-testing.md)):
+
+- **Saturation point ≈ 26 jobs/s enqueue** at WORKER_MAX=8, WORK_MS=300 —
+  the fleet hits its theoretical drain ceiling (8 × 1000/307ms) exactly.
+  Above it, depth grows at (enqueue − 26)/s and oldest-age is unbounded.
+- **What broke first:** not the ceiling — a concurrency bug *below* it.
+  Worker v1 held hot `scores` row locks across in-transaction sleeps →
+  lock convoys (3s batches → 17.6s) and cross-replica deadlocks; 8 busy
+  workers did 4.5 jobs/s. Diagnosed from the throughput panel (processed/s
+  falling as replicas rose) + deadlock errors in Loki.
+- **Fix:** compute first, then one short key-sorted upsert window at the end
+  of the tx. Restored the exact theoretical ceiling.
+- api tier never stressed (p95 flat at 5–7ms): enqueue is one INSERT. The
+  scaling bottleneck at this shape is always the worker fleet, by design.

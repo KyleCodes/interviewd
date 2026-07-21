@@ -62,9 +62,12 @@ load-ramp:
 	npx artillery run loadtest/ramp.yml
 
 # Guided worker-outage drill under load — watch depth + oldest-age climb, then drain.
+# The autoscaler must be suspended first or it resurrects the fleet within one
+# poll (that self-healing is its own demo — see runbook "fleet-kill").
 demo-failure:
-	@echo ">> stopping all workers. Start load in another terminal: make load"
-	$(COMPOSE) stop worker
-	@printf ">> workers down, jobs buffering durably in postgres. press enter to recover... "; read _
-	$(COMPOSE) start worker
-	@echo ">> workers recovering — watch queue depth drain to 0 in Grafana."
+	@echo ">> suspending autoscaler (else it self-heals), stopping all workers."
+	@echo ">> start load in another terminal: make load (or set the dial ~25)"
+	$(COMPOSE) stop autoscaler worker
+	@printf ">> workers down, jobs buffering durably in postgres. watch depth + oldest-age climb. press enter to recover... "; read _
+	$(COMPOSE) start worker autoscaler
+	@echo ">> worker + autoscaler back — watch the fleet scale out and depth drain to 0."

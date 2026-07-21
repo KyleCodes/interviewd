@@ -80,8 +80,7 @@ docker ps --filter label=com.docker.compose.service=api -q | grep -v $(docker ps
 
 ```sh
 # with the dial at ~25 rps:
-docker compose stop worker                 # stop the compose-managed worker
-docker ps --filter label=com.docker.compose.service=worker -q | xargs docker rm -f
+docker compose stop worker                 # stops the whole fleet: clones carry the service label
 # watch: depth + oldest-age climb; replicas panel drops to 0; within one poll
 # the autoscaler clones from the *stopped* compose container's template and
 # rebuilds the fleet 0→1→2→…; backlog drains; no events lost (ack = tx delete).

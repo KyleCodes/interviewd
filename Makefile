@@ -69,5 +69,9 @@ demo-failure:
 	@echo ">> start load in another terminal: make load (or set the dial ~25)"
 	$(COMPOSE) stop autoscaler worker
 	@printf ">> workers down, jobs buffering durably in postgres. watch depth + oldest-age climb. press enter to recover... "; read _
+	@# purge stopped clones first: `compose start worker` restarts EVERY stopped
+	@# container with the worker label — recovery would resurrect the whole
+	@# graveyard of old clones and overshoot WORKER_MAX.
+	@docker ps -a --filter label=com.docker.compose.service=worker --filter status=exited -q | grep -v $$(docker ps -aqf name=interviewd-worker-1) | xargs docker rm 2>/dev/null || true
 	$(COMPOSE) start worker autoscaler
 	@echo ">> worker + autoscaler back — watch the fleet scale out and depth drain to 0."

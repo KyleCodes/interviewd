@@ -30,7 +30,7 @@ Autoscaling demo — run and watch replicas step up in Grafana:
 make load-ramp
 ```
 
-Other verbs: `make down | reset | logs | scale | load | demo-failure | deploy | rollback`.
+Other verbs: `make down | reset | logs | scale | load | demo-kill-worker | demo-kill-api | deploy | rollback`.
 
 ## Docs
 

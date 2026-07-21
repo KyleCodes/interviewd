@@ -4,7 +4,7 @@ COMPOSE := docker compose
 SERVICE ?=
 N ?= 2
 
-.PHONY: up down reset logs build deploy rollback scale load load-ramp load-stop demo-failure
+.PHONY: up down reset logs build deploy rollback scale load load-ramp load-stop demo-kill-worker demo-kill-api
 
 # Foreground by default: log streams from every service in this terminal
 # (Ctrl-C stops the stack). `make up D=1` detaches instead.
@@ -61,17 +61,20 @@ load:
 load-ramp:
 	npx artillery run loadtest/ramp.yml
 
-# Guided worker-outage drill under load — watch depth + oldest-age climb, then drain.
-# The autoscaler must be suspended first or it resurrects the fleet within one
-# poll (that self-healing is its own demo — see runbook "fleet-kill").
-demo-failure:
-	@echo ">> suspending autoscaler (else it self-heals), stopping all workers."
-	@echo ">> start load in another terminal: make load (or set the dial ~25)"
-	$(COMPOSE) stop autoscaler worker
-	@printf ">> workers down, jobs buffering durably in postgres. watch depth + oldest-age climb. press enter to recover... "; read _
-	@# purge stopped clones first: `compose start worker` restarts EVERY stopped
-	@# container with the worker label — recovery would resurrect the whole
-	@# graveyard of old clones and overshoot WORKER_MAX.
+# Failure drills — the autoscaler stays LIVE and self-heals both. Run with the
+# dial at ~25 rps and Grafana open. Two flavors:
+#   demo-kill-worker: fleet dies -> depth + oldest-age climb -> autoscaler
+#     resurrects workers from the stopped template -> backlog drains, no loss.
+#   demo-kill-api: api fleet dies -> gateway 502s, error rates spike on the
+#     status panel -> autoscaler restores min api replicas -> traffic recovers.
+demo-kill-worker:
+	@echo ">> killing the entire worker fleet. watch: depth climbs, replicas hit 0, then self-heal."
+	$(COMPOSE) stop worker
 	@docker ps -a --filter label=com.docker.compose.service=worker --filter status=exited -q | grep -v $$(docker ps -aqf name=interviewd-worker-1) | xargs docker rm 2>/dev/null || true
-	$(COMPOSE) start worker autoscaler
-	@echo ">> worker + autoscaler back — watch the fleet scale out and depth drain to 0."
+	@echo ">> fleet down. autoscaler resurrects within ~15s; when depth drains, run: docker compose start worker"
+
+demo-kill-api:
+	@echo ">> killing the api fleet. watch: 5xx on the status panel, dial errors climb, then self-heal."
+	$(COMPOSE) stop api
+	@docker ps -a --filter label=com.docker.compose.service=api --filter status=exited -q | grep -v $$(docker ps -aqf name=interviewd-api-1) | xargs docker rm 2>/dev/null || true
+	@echo ">> api down. autoscaler restores min replicas within ~15s; then run: docker compose start api"

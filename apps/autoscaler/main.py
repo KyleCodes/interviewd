@@ -8,6 +8,7 @@ are preserved so promtail/prometheus discovery and our own replica counting
 still work. Good enough for a demo control plane.
 """
 import os
+import os.path
 import time
 
 import docker
@@ -152,6 +153,11 @@ def tick():
         print(f"level=error msg=prometheus_query_failed err={e!r}", flush=True)
     g_p95.set(p95 if p95 is not None else float("nan"))
 
+    # Drill switch: `touch /tmp/paused` (docker exec) suspends *actuation* only.
+    # Observation must never stop — the depth/age gauges are the ops dashboard's
+    # data source, and a drill that blinds the dashboard defeats its own purpose.
+    paused = os.path.exists("/tmp/paused")
+
     now = time.time()
     actions = []
     plan = {}
@@ -160,11 +166,17 @@ def tick():
         cur = len(containers)
         g_current.labels(service=svc).set(cur)  # exported every tick: Grafana's "instances over time"
         desired = cur if signal is None else decide(svc, cur, signal, up_thr, down_thr)
+        # Bounds hold even when the signal is missing: a dead fleet emits no
+        # metrics, and "no data" must still heal back to min replicas.
+        lo, hi = LIMITS[svc]
+        desired = max(min(desired, hi), lo)
         g_desired.labels(service=svc).set(desired)
         plan[svc] = (cur, desired)
         if desired != cur:
+            if paused:
+                actions.append(f"{svc}:paused")
             # Cooldown prevents flapping: signals lag the last scale action.
-            if now - last_scaled[svc] >= COOLDOWN_SECONDS:
+            elif now - last_scaled[svc] >= COOLDOWN_SECONDS:
                 scale(svc, containers, desired)
                 actions.append(f"{svc}:{'up' if desired > cur else 'down'}")
             else:

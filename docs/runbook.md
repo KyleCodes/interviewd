@@ -27,7 +27,7 @@ Narration, per panel, as the ramp climbs:
 
 ```sh
 make load            # terminal 1: steady 20/s background
-make demo-failure    # terminal 2: stops the workers
+make demo-kill-worker   # terminal 2: kills the worker fleet (autoscaler self-heals)
 ```
 
 Narrate: workers stop; processed/s -> 0; depth and oldest-age climb together

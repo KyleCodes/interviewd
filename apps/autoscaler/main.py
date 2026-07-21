@@ -76,6 +76,19 @@ def running(svc):
     return sorted(cs, key=lambda c: c.attrs["Created"])
 
 
+def template_for(svc, containers):
+    """Clone source: prefer the running compose-managed container, else any
+    running one, else a *stopped* compose-managed one — so the fleet can be
+    resurrected from zero (e.g. after an operator kills every worker)."""
+    t = next((c for c in containers if "com.docker.compose.container-number" in c.labels), None)
+    if t or containers:
+        return t or containers[0]
+    labels = [f"com.docker.compose.project={PROJECT}", f"com.docker.compose.service={svc}"]
+    stopped = client.containers.list(all=True, filters={"label": labels})
+    return next((c for c in stopped if "com.docker.compose.container-number" in c.labels),
+                stopped[0] if stopped else None)
+
+
 def scale(svc, containers, desired):
     cur = len(containers)
     if desired > cur:
@@ -85,12 +98,18 @@ def scale(svc, containers, desired):
         # CRITICAL: attach to the network with the service name as DNS alias —
         # compose does this implicitly; without it the gateway/prometheus DNS
         # round-robin (`api`, `worker` A-records) would never see the clone.
-        # Template = the compose-managed container (it carries container-number),
-        # falling back to oldest. Deploys recreate the compose container with the
-        # new image, so clones always inherit the *current* release — cloning the
-        # oldest could resurrect a rolled-over image.
-        t = next((c for c in containers if "com.docker.compose.container-number" in c.labels), containers[0])
-        net_name = list(t.attrs["NetworkSettings"]["Networks"].keys())[0]
+        # Template preference (see template_for): running compose-managed >
+        # running clone > stopped compose-managed. Deploys recreate the compose
+        # container with the new image, so clones inherit the current release.
+        t = template_for(svc, containers)
+        if t is None:
+            print(f"level=error msg=no_template service={svc}", flush=True)
+            return
+        # Pick the *project* network, never docker's default bridge: a clone
+        # itself carries both (create() attaches bridge implicitly), and
+        # re-connecting a new container to bridge 400s.
+        nets = list(t.attrs["NetworkSettings"]["Networks"].keys())
+        net_name = next((n for n in nets if PROJECT in n), f"{PROJECT}_default")
         clone = client.containers.create(
             image=t.image.id,
             environment=list(t.attrs["Config"]["Env"]),

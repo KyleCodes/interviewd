@@ -60,3 +60,30 @@ behavior for a reconciling controller; pin WORKER_MIN/MAX if you want it held.
 | GET /score always 404 | workers dead or Redis+Postgres write failing | oldest-age panel; `{compose_service="worker"} |= "error"` |
 | Everything 5xx at high load | Postgres connection ceiling | worker/api logs for connection errors; lower replica maxima or raise pg max_connections |
 | Port 8080/3000/9090 in use | stale stack or other process | `make down`; `lsof -i :8080` |
+
+## Demo: bad deploy → observable regression → rollback
+
+A pre-built broken api image (`interviewd-api:bad`, 30% of enqueues 500) makes
+this a pointer-move-only demo — no live coding:
+
+```sh
+make load                                  # background traffic (or set the dial ~25)
+make rollback SERVICE=api TAG=bad          # "deploy" the bad build (pointer move + recreate)
+# watch: HTTP status panel grows a 500 series; only ~half of requests fail —
+# the api clone still runs :dev. Narrate as a canary-style partial rollout.
+make rollback SERVICE=api TAG=dev          # rollback: seconds, no rebuild
+# stale clones keep the old image until the autoscaler cycles them; to force:
+docker ps --filter label=com.docker.compose.service=api -q | grep -v $(docker ps -qf name=interviewd-api-1) | xargs docker rm -f
+```
+
+## Demo: kill the whole worker fleet → self-healing resurrection
+
+```sh
+# with the dial at ~25 rps:
+docker compose stop worker                 # stop the compose-managed worker
+docker ps --filter label=com.docker.compose.service=worker -q | xargs docker rm -f
+# watch: depth + oldest-age climb; replicas panel drops to 0; within one poll
+# the autoscaler clones from the *stopped* compose container's template and
+# rebuilds the fleet 0→1→2→…; backlog drains; no events lost (ack = tx delete).
+docker compose start worker                # restore the compose-managed member for future deploys
+```

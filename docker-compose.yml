@@ -49,6 +49,7 @@ services:
     environment:
       DATABASE_URL: postgres://interviewd:dev@postgres:5432/interviewd
       REDIS_URL: redis://redis:6379/0
+      MAX_QUEUE_DEPTH: '${MAX_QUEUE_DEPTH:-5000}'   # backpressure: 429 past this
     depends_on:
       postgres:
         condition: service_healthy

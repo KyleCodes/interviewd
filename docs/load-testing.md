@@ -70,3 +70,14 @@ from the new template while the backlog drained.
 **Did not break:** api p95 (flat 5–7ms — enqueue is one cheap INSERT; api
 scaling on p95 never triggered and would need a heavier read path to demo),
 nginx (no 5xx), Postgres connections (18 peak vs default 100), Redis.
+
+## Backpressure (added after the first saturation run)
+
+The first run showed the failure mode past saturation: unbounded depth and
+oldest-age — every accepted job a promise the fleet can't keep. The api now
+sheds at the edge: `POST /interviews` returns **429 + Retry-After: 10** once
+depth ≥ MAX_QUEUE_DEPTH (default 5000; depth cached in-process 500ms so the
+check adds no per-request COUNT). Verified live: with depth at 5,420 the edge
+shed (`api_jobs_shed_total`, visible as 429s in the status-code panel) and
+auto-recovered as the fleet drained below the limit. The queue is now a
+bounded buffer that absorbs bursts, not an unbounded liability.

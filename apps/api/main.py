@@ -30,6 +30,24 @@ REQ_INFLIGHT = Gauge("api_requests_in_flight", "Concurrent requests being served
 CACHE_REQUESTS = Counter("api_cache_requests_total", "Score cache lookups")
 CACHE_HITS = Counter("api_cache_hits_total", "Score cache hits")
 JOBS_ENQUEUED = Counter("api_jobs_enqueued_total", "Jobs pushed to the queue")
+JOBS_SHED = Counter("api_jobs_shed_total", "Enqueues rejected 429: queue over MAX_QUEUE_DEPTH")
+
+# --- backpressure -------------------------------------------------------------
+# Beyond the worker fleet's drain ceiling every accepted job is a promise we
+# can't keep: depth and oldest-age grow without bound. Past MAX_QUEUE_DEPTH we
+# shed at the edge (429 + Retry-After) instead. Depth is cached in-process for
+# 500ms so backpressure doesn't add a COUNT(*) per request.
+MAX_QUEUE_DEPTH = int(os.environ.get("MAX_QUEUE_DEPTH", "5000"))
+_depth_cache = {"at": 0.0, "depth": 0}
+
+
+def queue_depth() -> int:
+    now = time.monotonic()
+    if now - _depth_cache["at"] > 0.5:
+        with pool.connection() as conn:
+            _depth_cache["depth"] = conn.execute("SELECT count(*) FROM jobs_queue").fetchone()[0]
+        _depth_cache["at"] = now
+    return _depth_cache["depth"]
 
 app = FastAPI(title="interviewd-api")
 
@@ -61,6 +79,12 @@ def enqueue(iv: InterviewIn):
     # Fire-and-forget: one INSERT, return 202. Ingest is cheap while scoring is
     # slow (simulated LLM call) => the queue backs up under load => the
     # autoscaler adds workers. That's the whole demo.
+    if queue_depth() >= MAX_QUEUE_DEPTH:
+        JOBS_SHED.inc()
+        raise HTTPException(
+            status_code=429, detail="queue full, retry later",
+            headers={"Retry-After": "10"},
+        )
     with pool.connection() as conn:
         conn.execute(
             "INSERT INTO jobs_queue (interview_id) VALUES (%s)", (iv.interview_id,)

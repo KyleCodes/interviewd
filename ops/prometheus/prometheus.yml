@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Scaled replicas are discovered via Docker's embedded DNS: one A record
+  # per running container for the service name, so targets track the
+  # autoscaler's actions automatically.
+  - job_name: api
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ['api']
+        type: A
+        port: 8000
+
+  - job_name: worker
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ['worker']
+        type: A
+        port: 9100
+
+  - job_name: autoscaler
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['autoscaler:9102']
+
+  # Offered load (traffic_target_rps) — overlaid against processed/s in Grafana
+  # to show the saturation gap.
+  - job_name: traffic
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['traffic:8090']
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

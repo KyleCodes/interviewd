@@ -1,0 +1,33 @@
+# interviewd steady-state load — 20/s for 10 minutes.
+#
+# Run:    npx artillery run loadtest/steady.yml
+#         (or: make load)
+#
+# Purpose: constant background load for the failure drill (make demo-failure —
+# stop workers, watch depth/age climb, recover, drain with zero loss) and for
+# cache-hit demos (repeated GET /score on the 50-id pool drives hit ratio up).
+
+config:
+  target: "http://localhost:8080"
+  phases:
+    - duration: 600
+      arrivalRate: 20
+      name: steady
+  http:
+    timeout: 10
+
+scenarios:
+  - name: submit-interview
+    weight: 80
+    flow:
+      - post:
+          url: "/interviews"
+          json:
+            interview_id: "iv-{{ $randomNumber(1, 50) }}"
+
+  - name: poll-score
+    weight: 20
+    flow:
+      - get:
+          # 404 until the job is scored — intentionally no expect block.
+          url: "/score/iv-{{ $randomNumber(1, 50) }}"

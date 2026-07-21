@@ -1,0 +1,13 @@
+{
+  "name": "worker",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker build -t interviewd-worker:${TAG:-dev} apps/worker",
+        "cwd": "{workspaceRoot}"
+      }
+    }
+  }
+}

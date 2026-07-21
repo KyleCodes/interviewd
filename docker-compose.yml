@@ -1,0 +1,158 @@
+# interviewd — the whole platform on one compose file.
+# api and worker carry NO ports/container_name so `--scale api=N --scale worker=N`
+# works; the gateway (nginx) and Prometheus discover replicas via docker DNS.
+name: interviewd
+
+services:
+  # ---------- state ----------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: interviewd
+      POSTGRES_USER: interviewd
+      POSTGRES_PASSWORD: dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - '${PG_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U interviewd -d interviewd']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------- edge ----------
+  # API gateway + load balancer. Re-resolves `api` via docker DNS so new
+  # replicas join the pool with no reload.
+  gateway:
+    image: interviewd-gateway:${GATEWAY_TAG:-dev}
+    build: apps/gateway
+    ports:
+      - '${GATEWAY_PORT:-8080}:8080'
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ---------- app plane (scalable: no ports, no container_name) ----------
+  api:
+    image: interviewd-api:${API_TAG:-dev}
+    build: apps/api
+    environment:
+      DATABASE_URL: postgres://interviewd:dev@postgres:5432/interviewd
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    image: interviewd-worker:${WORKER_TAG:-dev}
+    build: apps/worker
+    environment:
+      DATABASE_URL: postgres://interviewd:dev@postgres:5432/interviewd
+      REDIS_URL: redis://redis:6379/0
+      WORK_MS: '${WORK_MS:-300}'   # simulated LLM-call latency per job — the saturation dial
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Live load dial: web UI on :8090 drives traffic at the gateway at a target
+  # RPS. Cranking it is how scaling events are triggered on demand in demos.
+  traffic:
+    image: interviewd-traffic:${TRAFFIC_TAG:-dev}
+    build: apps/traffic
+    environment:
+      GATEWAY_URL: http://gateway:8080
+    ports:
+      - '${TRAFFIC_PORT:-8090}:8090'
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  # ---------- control plane ----------
+  # Watches queue depth + api p95, scales api/worker via the docker socket,
+  # and exports the replica-count/depth/age gauges Grafana graphs.
+  autoscaler:
+    image: interviewd-autoscaler:${AUTOSCALER_TAG:-dev}
+    build: apps/autoscaler
+    environment:
+      DATABASE_URL: postgres://interviewd:dev@postgres:5432/interviewd
+      PROMETHEUS_URL: http://prometheus:9090
+      COMPOSE_PROJECT: interviewd
+      POLL_SECONDS: '5'
+      WORKER_MIN: '1'
+      WORKER_MAX: '8'
+      API_MIN: '2'
+      API_MAX: '6'
+      DEPTH_UP: '200'
+      DEPTH_DOWN: '20'
+      P95_UP_MS: '500'
+      P95_DOWN_MS: '150'
+      COOLDOWN_SECONDS: '15'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- observability ----------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '${PROMETHEUS_PORT:-9090}:9090'
+
+  loki:
+    image: grafana/loki:3.1.1
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./ops/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      # Local operator dashboard: anonymous Admin, no login form. Not for prod.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: 'Admin'
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - '${GRAFANA_PORT:-3000}:3000'
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  pgdata:

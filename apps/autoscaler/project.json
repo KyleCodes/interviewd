@@ -1,0 +1,13 @@
+{
+  "name": "autoscaler",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker build -t interviewd-autoscaler:${TAG:-dev} apps/autoscaler",
+        "cwd": "{workspaceRoot}"
+      }
+    }
+  }
+}

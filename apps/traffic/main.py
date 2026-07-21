@@ -19,9 +19,10 @@ log = logging.getLogger("traffic")
 
 TARGET_RPS = Gauge("traffic_target_rps", "Offered load set by the operator dial")
 SENT = Counter("traffic_requests_sent_total", "Requests fired at the gateway", ["endpoint"])
-ERRORS = Counter("traffic_request_errors_total", "Requests that failed or were shed")
+ERRORS = Counter("traffic_request_errors_total", "Transport failures / 5xx / local shed")
+SHED = Counter("traffic_requests_shed_total", "429s from the api's backpressure")
 
-state = {"target_rps": 0, "sent_total": 0, "errors_total": 0}
+state = {"target_rps": 0, "sent_total": 0, "shed_total": 0, "errors_total": 0}
 sem = asyncio.Semaphore(500)  # in-flight cap: we generate load, we don't OOM ourselves
 
 app = FastAPI()
@@ -33,11 +34,19 @@ async def fire(client: httpx.AsyncClient) -> None:
     try:
         if random.random() < 0.8:
             SENT.labels(endpoint="enqueue").inc()
-            await client.post(f"{GATEWAY_URL}/interviews", json={"interview_id": f"iv-{n}"})
+            r = await client.post(f"{GATEWAY_URL}/interviews", json={"interview_id": f"iv-{n}"})
         else:
             SENT.labels(endpoint="score").inc()
-            await client.get(f"{GATEWAY_URL}/score/iv-{n}")  # 404 is normal early
+            r = await client.get(f"{GATEWAY_URL}/score/iv-{n}")  # 404 is normal early
         state["sent_total"] += 1
+        # httpx doesn't raise on status codes: classify. 429 = the api's
+        # backpressure doing its job (its own counter); 5xx = real errors.
+        if r.status_code == 429:
+            state["shed_total"] += 1
+            SHED.inc()
+        elif r.status_code >= 500:
+            state["errors_total"] += 1
+            ERRORS.inc()
     except Exception:
         state["errors_total"] += 1
         ERRORS.inc()
@@ -111,7 +120,7 @@ small{color:#888}
 <button onclick="setRate(25)">25</button><button onclick="setRate(60)">60</button>
 <button onclick="setRate(120)">120</button><button onclick="setRate(250)">250</button>
 </div>
-<p><small id="stats">sent 0 / errors 0</small></p>
+<p><small id="stats">sent 0 / shed(429) 0 / errors 0</small></p>
 <p><small>drag the dial, then watch replicas at localhost:3000</small></p>
 <script>
 const dial=document.getElementById("dial");
@@ -121,7 +130,7 @@ body:JSON.stringify({target_rps:+n})});poll();}
 dial.oninput=()=>setRate(dial.value);
 async function poll(){const s=await(await fetch("/api/state")).json();
 document.getElementById("rps").textContent=s.target_rps;dial.value=s.target_rps;
-document.getElementById("stats").textContent=`sent ${s.sent_total} / errors ${s.errors_total}`;}
+document.getElementById("stats").textContent=`sent ${s.sent_total} / shed(429) ${s.shed_total} / errors ${s.errors_total}`;}
 setInterval(poll,2000);poll();
 </script>"""
 
